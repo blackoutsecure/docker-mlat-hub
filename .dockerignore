@@ -1,0 +1,30 @@
+# VCS
+.git
+.github/
+.gitignore
+.gitattributes
+
+# Environment and secrets
+.env
+.env.*
+
+# Documentation and metadata (not needed in image)
+README.md
+LICENSE
+readme-vars.yml
+balena.yml
+logo.png
+
+# Editor and tooling config
+.editorconfig
+.vscode/
+.idea/
+
+# Local development
+tmp/
+*.log
+*.tmp
+
+# Ensure root overlay and Dockerfile context are included
+!root/
+!Dockerfile

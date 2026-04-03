@@ -1,0 +1,33 @@
+# Environment and secrets
+.env
+.env.*
+.secrets/
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+.*.swp
+*~
+*.swo
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.log
+.tmp-config/
+tmp/
+
+# Runtime and local development
+/local/
+/.local/
+.cache/
+*.tmp
+
+# Version and patch files
+.version
+*.orig
+*.rej
+*.patch

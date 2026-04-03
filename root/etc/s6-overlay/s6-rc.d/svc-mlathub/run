@@ -1,0 +1,63 @@
+#!/usr/bin/with-contenv bash
+
+set -euo pipefail
+
+SVC_NAME="svc-mlathub"
+# shellcheck source=/usr/local/bin/log-functions.sh
+. /usr/local/bin/log-functions.sh
+
+mlathub_user=${MLATHUB_USER:-abc}
+mlathub_run_dir=${MLATHUB_RUN_DIR:-/run/mlathub}
+
+mkdir -p "${mlathub_run_dir}"
+
+# ── Build readsb arguments for MLAT hub mode ──────────────────────────────────
+readsb_args=(
+    --net
+    --net-only
+    --forward-mlat
+    --quiet
+    --net-bo-port "${MLATHUB_BEAST_OUTPUT_PORT:-30105}"
+    --net-bi-port "${MLATHUB_BEAST_INPUT_PORT:-30104}"
+    --net-heartbeat 60
+)
+
+# Optional SBS output
+if [[ -n "${MLATHUB_SBS_OUTPUT_PORT:-}" ]]; then
+    readsb_args+=(--net-sbs-port "${MLATHUB_SBS_OUTPUT_PORT}")
+fi
+
+# ── Parse MLAT input sources ─────────────────────────────────────────────────
+input_count=0
+if [[ -n "${MLATHUB_INPUTS:-}" ]]; then
+    IFS=';' read -ra _input_list <<< "${MLATHUB_INPUTS}"
+    for _input in "${_input_list[@]}"; do
+        _input="${_input// /}"
+        if [[ -n "${_input}" ]]; then
+            readsb_args+=(--net-connector "${_input}")
+            input_count=$((input_count + 1))
+        fi
+    done
+fi
+
+# Optional extra args
+if [[ -n "${MLATHUB_EXTRA_ARGS:-}" ]]; then
+    read -r -a extra_args <<< "${MLATHUB_EXTRA_ARGS}"
+    readsb_args+=("${extra_args[@]}")
+fi
+
+# ── Startup log ───────────────────────────────────────────────────────────────
+log_info "mlat-hub starting: ${input_count} input(s), beast-out=${MLATHUB_BEAST_OUTPUT_PORT:-30105}, beast-in=${MLATHUB_BEAST_INPUT_PORT:-30104}"
+
+if [[ ${input_count} -eq 0 ]]; then
+    log_warn "No MLAT inputs configured. Set MLATHUB_INPUTS or connect clients to port ${MLATHUB_BEAST_INPUT_PORT:-30104}."
+fi
+
+# ── Exec readsb ──────────────────────────────────────────────────────────────
+if [[ -z ${LSIO_NON_ROOT_USER:-} ]]; then
+    lsiown -R "${mlathub_user}:${mlathub_user}" "${mlathub_run_dir}"
+    exec s6-setuidgid "${mlathub_user}" \
+        /usr/local/bin/readsb "${readsb_args[@]}"
+fi
+
+exec /usr/local/bin/readsb "${readsb_args[@]}"

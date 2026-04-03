@@ -1,0 +1,210 @@
+name: Monitor Upstream Releases
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Dispatch publish workflow even if upstream metadata is unchanged'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'schedule' }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: wiedehopf/readsb
+  UPSTREAM_BRANCH: dev
+  UPSTREAM_VERSION_URL: https://raw.githubusercontent.com/wiedehopf/readsb/dev/version
+  TRACK_FILE: .github/upstream/readsb-dev.json
+  TARGET_WORKFLOW_PUBLISH: publish.yml
+  TARGET_WORKFLOW_RELEASE: release.yml
+  GIT_CONFIG_USER_NAME: github-actions[bot]
+  GIT_CONFIG_USER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream readsb metadata and detect changes
+        id: check
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$(dirname "${TRACK_FILE}")"
+
+          echo "--- Fetching upstream metadata ---"
+          echo "Repo:   ${UPSTREAM_REPO}"
+          echo "Branch: ${UPSTREAM_BRANCH}"
+          echo "URL:    ${UPSTREAM_VERSION_URL}"
+
+          # Fetch the upstream version string from the dev branch
+          upstream_version="$(curl -fsSL "${UPSTREAM_VERSION_URL}" | tr -d '[:space:]')"
+          echo "Upstream version: ${upstream_version}"
+
+          # Resolve the latest commit SHA on the dev branch (no full clone needed)
+          upstream_commit="$(git ls-remote "https://github.com/${UPSTREAM_REPO}.git" "refs/heads/${UPSTREAM_BRANCH}" | cut -f1)"
+          echo "Upstream commit:  ${upstream_commit}"
+
+          if [ -z "${upstream_version}" ] || [ -z "${upstream_commit}" ]; then
+            echo "ERROR: Failed to fetch upstream version or commit"
+            exit 1
+          fi
+
+          # Write upstream snapshot as sorted JSON for stable comparison
+          jq -n \
+            --arg version "${upstream_version}" \
+            --arg commit "${upstream_commit}" \
+            --arg branch "${UPSTREAM_BRANCH}" \
+            '{"branch": $branch, "version": $version, "commit": $commit}' \
+            > /tmp/upstream-readsb-dev.json
+
+          echo "upstream_version=${upstream_version}" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=${upstream_commit}" >> "$GITHUB_OUTPUT"
+
+          echo "--- Comparing with tracked metadata ---"
+          if [ -f "${TRACK_FILE}" ]; then
+            echo "Tracked file exists: ${TRACK_FILE}"
+            echo "Tracked contents:"
+            cat "${TRACK_FILE}"
+            echo ""
+            if cmp -s "${TRACK_FILE}" /tmp/upstream-readsb-dev.json; then
+              echo "Result: NO CHANGE — upstream metadata matches tracked file"
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Result: CHANGED — upstream metadata differs from tracked file"
+              echo "Diff (tracked -> upstream):"
+              diff "${TRACK_FILE}" /tmp/upstream-readsb-dev.json || true
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Tracked file not found — treating as first run"
+            echo "Result: CHANGED (new)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update tracked metadata file
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          echo "Writing updated metadata to ${TRACK_FILE}"
+          cp /tmp/upstream-readsb-dev.json "${TRACK_FILE}"
+          echo "Updated contents:"
+          cat "${TRACK_FILE}"
+
+      - name: Commit tracked metadata changes
+        if: steps.check.outputs.changed == 'true'
+        env:
+          UPSTREAM_VERSION: ${{ steps.check.outputs.upstream_version }}
+          UPSTREAM_COMMIT: ${{ steps.check.outputs.upstream_commit }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "${GIT_CONFIG_USER_NAME}"
+          git config user.email "${GIT_CONFIG_USER_EMAIL}"
+          git add "${TRACK_FILE}"
+
+          if git diff --cached --quiet; then
+            echo "No tracked metadata changes to commit."
+            exit 0
+          fi
+
+          COMMIT_MSG="chore(ci): track readsb dev ${UPSTREAM_VERSION} (${UPSTREAM_COMMIT:0:7})"
+          echo "Committing: ${COMMIT_MSG}"
+          git commit -m "${COMMIT_MSG}"
+
+      - name: Push tracked metadata commit
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          echo "Pushing commit to origin"
+          git push
+          echo "Push complete"
+
+      - name: Trigger downstream workflows
+        if: steps.check.outputs.changed == 'true' || (github.event_name == 'workflow_dispatch' && inputs.force_publish)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          dispatch() {
+            local workflow="$1"
+            echo "Dispatching ${workflow} on ${DEFAULT_BRANCH}"
+            curl -fsSL -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${REPO}/actions/workflows/${workflow}/dispatches" \
+              -d "{\"ref\":\"${DEFAULT_BRANCH}\"}"
+            echo "Dispatch sent: ${workflow}"
+          }
+
+          dispatch "${TARGET_WORKFLOW_PUBLISH}"
+          dispatch "${TARGET_WORKFLOW_RELEASE}"
+          echo "All downstream workflows dispatched"
+
+      - name: Publish monitor summary
+        if: always()
+        env:
+          CHANGED: ${{ steps.check.outputs.changed }}
+          UPSTREAM_VERSION: ${{ steps.check.outputs.upstream_version }}
+          UPSTREAM_COMMIT: ${{ steps.check.outputs.upstream_commit }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_PUBLISH: ${{ inputs.force_publish }}
+        run: |
+          changed="${CHANGED}"
+          force="${FORCE_PUBLISH:-false}"
+          triggered=false
+          trigger_reason=""
+
+          if [ "${changed}" = "true" ]; then
+            triggered=true
+            trigger_reason="upstream metadata changed"
+          elif [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${force}" = "true" ]; then
+            triggered=true
+            trigger_reason="force_publish requested via workflow_dispatch"
+          fi
+
+          {
+            echo "## Upstream readsb Monitor"
+            echo ""
+
+            echo "### Upstream"
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Repo | [${UPSTREAM_REPO}](https://github.com/${UPSTREAM_REPO}/tree/${UPSTREAM_BRANCH}) |"
+            echo "| Branch | \`${UPSTREAM_BRANCH}\` |"
+            echo "| Version | \`${UPSTREAM_VERSION}\` |"
+            echo "| Commit | \`${UPSTREAM_COMMIT}\` |"
+            echo ""
+
+            echo "### Run"
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Trigger | \`${EVENT_NAME}\` |"
+
+            if [ "${changed}" = "true" ]; then
+              echo "| Upstream changed | Yes — metadata updated and committed |"
+            else
+              echo "| Upstream changed | No — metadata unchanged |"
+            fi
+
+            if [ "${triggered}" = "true" ]; then
+              echo "| Downstream triggered | Yes — ${trigger_reason} |"
+              echo "| Workflows dispatched | \`${TARGET_WORKFLOW_DOCKER}\`, \`${TARGET_WORKFLOW_BALENA}\`, \`${TARGET_WORKFLOW_RELEASE}\` |"
+            else
+              echo "| Downstream triggered | No — no change detected and force_publish not set |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

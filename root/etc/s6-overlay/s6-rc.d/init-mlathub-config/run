@@ -1,0 +1,27 @@
+#!/usr/bin/with-contenv bash
+
+set -euo pipefail
+
+SVC_NAME="init-mlathub-config"
+# shellcheck source=/usr/local/bin/log-functions.sh
+. /usr/local/bin/log-functions.sh
+
+mlathub_user=${MLATHUB_USER:-abc}
+
+# Default PUID/PGID for abc user
+if [[ "${mlathub_user}" == "abc" ]]; then
+    : "${PUID:=911}"; export PUID
+    : "${PGID:=911}"; export PGID
+fi
+
+_s6_env="/run/s6/container_environment"
+printf '%s' "${PUID:-}" > "${_s6_env}/PUID"
+printf '%s' "${PGID:-}" > "${_s6_env}/PGID"
+
+mkdir -p "${MLATHUB_RUN_DIR:-/run/mlathub}"
+
+if [[ -z ${LSIO_NON_ROOT_USER:-} ]]; then
+    lsiown -R "${mlathub_user}:${mlathub_user}" "${MLATHUB_RUN_DIR:-/run/mlathub}"
+fi
+
+log_info "mlat-hub init complete"

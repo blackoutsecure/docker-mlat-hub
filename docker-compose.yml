@@ -1,0 +1,18 @@
+version: '2.4'
+
+services:
+  mlathub:
+    image: docker.io/blackoutsecure/mlat-hub:latest
+    container_name: mlathub
+    environment:
+      TZ: Etc/UTC
+      MLATHUB_INPUTS: 'mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in'
+    ports:
+      - '30104:30104'
+      - '30105:30105'
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+      - /run:exec
+    restart: unless-stopped

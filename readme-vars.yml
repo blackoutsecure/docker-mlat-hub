@@ -1,0 +1,67 @@
+---
+# project information
+project_name: mlat-hub
+project_url: "https://github.com/wiedehopf/readsb"
+project_logo: ""
+project_blurb: "[{{ project_name }}]({{ project_url }}) — LinuxServer.io containerized MLAT hub aggregating readsb network-only feeds into one combined Beast output. This is not an official LinuxServer.io image release. Sponsored and maintained by [Blackout Secure](https://blackoutsecure.app)."
+project_lsio_github_repo_url: "https://github.com/blackoutsecure/docker-mlat-hub"
+project_categories: "Amateur Radio,Aviation,Networking,ADS-B,MLAT"
+
+# supported architectures
+available_architectures:
+  - {arch: "{{ arch_x86_64 }}", tag: "amd64-latest"}
+  - {arch: "{{ arch_arm64 }}", tag: "arm64v8-latest"}
+
+# common parameters
+common_param_env_vars_enabled: true
+param_container_name: "{{ project_name }}"
+param_usage_include_vols: false
+param_volumes: []
+
+param_usage_include_net: false
+param_usage_include_env: true
+param_env_vars:
+  - {env_var: "TZ", env_value: "Etc/UTC", desc: "Timezone (see TZ database)"}
+  - {env_var: "MLATHUB_INPUTS", env_value: "mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in", desc: "Semicolon-separated list of MLAT input sources as host,port,protocol entries"}
+
+# optional env variables
+opt_param_usage_include_env: true
+opt_param_env_vars:
+  - {env_var: "MLATHUB_USER", env_value: "abc", desc: "Runtime user (default: abc)."}
+  - {env_var: "PUID", env_value: "1000", desc: "User ID for file ownership (LinuxServer.io base image standard)"}
+  - {env_var: "PGID", env_value: "1000", desc: "Group ID for file ownership (LinuxServer.io base image standard)"}
+  - {env_var: "MLATHUB_BEAST_OUTPUT_PORT", env_value: "30105", desc: "Beast protocol output port for combined MLAT results (default: 30105)"}
+  - {env_var: "MLATHUB_BEAST_INPUT_PORT", env_value: "30104", desc: "Beast protocol input listen port (default: 30104). Feeder containers can push MLAT data to this port."}
+  - {env_var: "MLATHUB_SBS_OUTPUT_PORT", env_value: "", desc: "Optional SBS/Basestation output port. Leave empty to disable."}
+  - {env_var: "MLATHUB_EXTRA_ARGS", env_value: "", desc: "Additional readsb arguments appended to the command line."}
+
+# optional parameters
+optional_parameters: ""
+
+# application setup block
+app_setup_block_enabled: true
+app_setup_block: |
+  The container runs readsb in network-only mode with `--forward-mlat` enabled. It collects MLAT results from multiple feeder containers and outputs a single combined Beast feed.
+
+  **MLAT Inputs**: Set `MLATHUB_INPUTS` to a semicolon-separated list of `host,port,protocol` entries pointing at your mlat-client containers. Example: `mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in`
+
+  **Push Mode**: Instead of (or in addition to) pull-mode inputs, mlat-client containers can push Beast data to the hub's input port (`MLATHUB_BEAST_INPUT_PORT`, default 30104).
+
+  **Combined Output**: Deduplicated MLAT results are available on the Beast output port (`MLATHUB_BEAST_OUTPUT_PORT`, default 30105). Connect tar1090 or other tools to this port.
+
+  **Important**: Never feed MLAT results back to aggregation services. The mlat-hub is a separate instance specifically to prevent cross-contamination.
+
+  For all available options, see the [readsb documentation](https://github.com/wiedehopf/readsb).
+
+# hardware acceleration
+readme_hwaccel: false
+
+# read-only support
+readonly_supported: true
+readonly_message: |
+  Read-only operation is supported. Mount `/run` and `/tmp` as tmpfs.
+
+# non-root support
+nonroot_supported: true
+nonroot_message: |
+  Non-root operation is the default via the LinuxServer.io base image (user `abc`).

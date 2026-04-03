@@ -1,0 +1,480 @@
+name: Release
+
+on:
+  release:
+    types:
+      - published
+      - released
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: 'Release name (optional, defaults to upstream version)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  REGISTRY: docker.io
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE }}
+  IMAGE_NAME: mlat-hub
+  READSB_REPO_URL: https://github.com/wiedehopf/readsb
+  READSB_REPO_BRANCH: dev
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.detect.outputs.release_tag }}
+      release_name: ${{ steps.detect.outputs.release_name }}
+    steps:
+      - name: Detect release source
+        id: detect
+        env:
+          EVENT_ACTION: ${{ github.event_name }}
+          DISPATCH_NAME: ${{ github.event.inputs.release_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          READSB_REPO_BRANCH: ${{ env.READSB_REPO_BRANCH }}
+        run: |
+          set -euo pipefail
+
+          echo "ℹ Event: ${EVENT_ACTION}"
+
+          if [ "${EVENT_ACTION}" = "workflow_dispatch" ]; then
+            echo "ℹ Manual dispatch: fetching version from upstream wiedehopf/readsb (${READSB_REPO_BRANCH})"
+            UPSTREAM_VERSION=$(curl -fsSL \
+              "https://raw.githubusercontent.com/wiedehopf/readsb/${READSB_REPO_BRANCH}/version" \
+              2>/dev/null | tr -d '[:space:]')
+            if [[ -z "${UPSTREAM_VERSION}" ]]; then
+              echo "ERROR: Could not fetch version from wiedehopf/readsb/${READSB_REPO_BRANCH}/version"
+              exit 1
+            fi
+            echo "ℹ Upstream version detected: ${UPSTREAM_VERSION}"
+            TAG="${UPSTREAM_VERSION}"
+            NAME="${DISPATCH_NAME:-Upstream readsb ${UPSTREAM_VERSION}}"
+          else
+            TAG="${RELEASE_TAG}"
+            NAME="${RELEASE_NAME:-GitHub Release}"
+            echo "ℹ GitHub release detected"
+          fi
+
+          # Validate tag format
+          if ! [[ "${TAG}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Invalid version tag format: ${TAG}"
+            echo "Expected format: v1.2.3 or 1.2.3"
+            exit 1
+          fi
+
+          echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "✓ Release validation passed: ${TAG}"
+
+  release-metadata:
+    needs: validate-release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      release_name: ${{ steps.metadata.outputs.release_name }}
+      upstream_commit: ${{ steps.metadata.outputs.upstream_commit }}
+      upstream_version: ${{ steps.metadata.outputs.upstream_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract release metadata
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.validate-release.outputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          # Extract version from tag (e.g., v1.2.3 -> 1.2.3)
+          VERSION="${RELEASE_TAG#v}"
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "ℹ Release Version: ${VERSION}"
+
+          # Fetch upstream metadata with error handling
+          TMPDIR="$(mktemp -d)"
+          trap 'rm -rf "${TMPDIR}"' EXIT
+
+          git init "${TMPDIR}" >/dev/null 2>&1
+          git -C "${TMPDIR}" remote add origin "${READSB_REPO_URL}.git" 2>&1
+          if git -C "${TMPDIR}" fetch --depth 1 origin "${READSB_REPO_BRANCH}" >/dev/null 2>&1; then
+            UPSTREAM_COMMIT="$(git -C "${TMPDIR}" rev-parse FETCH_HEAD 2>/dev/null | cut -c1-7)"
+            UPSTREAM_VERSION="$(git -C "${TMPDIR}" show FETCH_HEAD:version 2>/dev/null || git -C "${TMPDIR}" describe --tags --always 2>/dev/null || echo unknown)"
+            echo "ℹ Upstream readsb: ${UPSTREAM_VERSION} (${UPSTREAM_COMMIT})"
+          else
+            UPSTREAM_COMMIT="unknown"
+            UPSTREAM_VERSION="unknown"
+            echo "⚠ Warning: Could not fetch upstream metadata"
+          fi
+
+          echo "upstream_commit=${UPSTREAM_COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=${UPSTREAM_VERSION}" >> "$GITHUB_OUTPUT"
+
+  tag-images:
+    needs: release-metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Validate Docker credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DOCKERHUB_USERNAME}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
+            echo "ERROR: Docker Hub credentials not configured"
+            exit 1
+          fi
+
+          echo "ℹ Docker Hub credentials validated"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Confirm Docker auth
+        run: docker info > /dev/null && echo "✓ Docker authentication confirmed"
+
+      - name: Extract Docker metadata
+        id: docker-meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release-metadata.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-metadata.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.release-metadata.outputs.version }}
+            type=raw,value=latest
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push multi-arch release
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          no-cache: false
+          pull: true
+          provenance: false
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: ${{ steps.docker-meta.outputs.labels }}
+          build-args: |
+            READSB_REPO_URL=${{ env.READSB_REPO_URL }}
+            READSB_REPO_BRANCH=${{ env.READSB_REPO_BRANCH }}
+
+  create-github-release:
+    needs: [validate-release, release-metadata, tag-images]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate release body
+        id: body
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          UPSTREAM_COMMIT: ${{ needs.release-metadata.outputs.upstream_commit }}
+          UPSTREAM_VERSION: ${{ needs.release-metadata.outputs.upstream_version }}
+          DOCKER_IMAGE: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+        run: |
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          cat > /tmp/release_notes.md << EOMD
+          ## Release ${RELEASE_VERSION}
+
+          ### Docker Hub Images
+
+          **Primary Registry:**
+          \`\`\`bash
+          docker pull ${DOCKER_IMAGE}:${RELEASE_VERSION}
+          docker pull ${DOCKER_IMAGE}:latest
+          \`\`\`
+
+          **Available Tags:**
+          - \`${DOCKER_IMAGE}:${RELEASE_VERSION}\` - Specific version (recommended for production)
+          - \`${DOCKER_IMAGE}:latest\` - Latest stable release
+          - Multi-arch support: amd64, arm64
+
+          ### Build Information
+
+          - **Image Version:** ${RELEASE_VERSION}
+          - **Release Tag:** ${RELEASE_TAG}
+          - **Upstream readsb:** ${UPSTREAM_VERSION} (commit: ${UPSTREAM_COMMIT})
+          - **Build Date:** ${BUILD_DATE}
+          - **Repository:** https://github.com/${{ github.repository }}
+
+          ### Supported Architectures
+
+          | Architecture | Platform |
+          | --- | --- |
+          | x86-64 | linux/amd64 |
+          | ARM 64-bit | linux/arm64v8 |
+
+          ### Quick Start
+
+          \`\`\`bash
+          docker run -d \\
+            --name mlathub \\
+            -e TZ=Etc/UTC \\
+            -e MLATHUB_INPUTS="mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in" \\
+            -p 30104:30104 \\
+            -p 30105:30105 \\
+            --security-opt no-new-privileges:true \\
+            ${DOCKER_IMAGE}:${RELEASE_VERSION}
+          \`\`\`
+
+          ### Documentation
+
+          - [Full README](https://github.com/${{ github.repository }}/blob/main/README.md)
+          - [Upstream readsb Documentation](https://github.com/wiedehopf/readsb)
+          - [Release History](https://github.com/${{ github.repository }}/releases)
+
+          ### About This Image
+
+          - **Built with:** LinuxServer.io-style patterns (s6, hardened defaults)
+          - **Maintained by:** Blackout Secure
+          - **Features:** MLAT result aggregation, Beast protocol input/output, network-only mode
+          - **Official Status:** Unofficial community container (not affiliated with LinuxServer.io or wiedehopf)
+          EOMD
+          cat /tmp/release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate-release.outputs.release_tag }}
+          name: ${{ needs.release-metadata.outputs.release_name }}
+          body_path: /tmp/release_notes.md
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-release-notes:
+    needs: [validate-release, release-metadata]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate release notes
+        id: notes
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          UPSTREAM_COMMIT: ${{ needs.release-metadata.outputs.upstream_commit }}
+          UPSTREAM_VERSION: ${{ needs.release-metadata.outputs.upstream_version }}
+          DOCKER_IMAGE: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+        run: |
+          cat > /tmp/release_notes.md << 'EOF'
+          ## Release ${{ env.RELEASE_VERSION }}
+
+          ### Docker Hub Images
+
+          **Primary Registry:**
+          ```bash
+          docker pull ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}
+          docker pull ${{ env.DOCKER_IMAGE }}:latest
+          ```
+
+          **Available Tags:**
+          - `${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}` - Specific version (recommended for production)
+          - `${{ env.DOCKER_IMAGE }}:latest` - Latest stable release
+          - Multi-arch support: amd64, arm64
+
+          ### Build Information
+
+          - **Image Version:** ${{ env.RELEASE_VERSION }}
+          - **Release Tag:** ${{ env.RELEASE_TAG }}
+          - **Upstream readsb:** ${{ env.UPSTREAM_VERSION }} (commit: ${{ env.UPSTREAM_COMMIT }})
+          - **Build Date:** $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          - **Repository:** ${{ github.server_url }}/${{ github.repository }}
+
+          ### Supported Architectures
+
+          | Architecture | Platform |
+          | --- | --- |
+          | x86-64 | linux/amd64 |
+          | ARM 64-bit | linux/arm64v8 |
+
+          ### Quick Start
+
+          ```bash
+          docker run -d \
+            --name mlathub \
+            -e TZ=Etc/UTC \
+            -e MLATHUB_INPUTS="mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in" \
+            -p 30104:30104 \
+            -p 30105:30105 \
+            --security-opt no-new-privileges:true \
+            ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}
+          ```
+
+          ### Documentation
+
+          - [Full README](https://github.com/${{ github.repository }}/blob/${{ github.ref }}/README.md)
+          - [Upstream readsb Documentation](https://github.com/wiedehopf/readsb)
+          - [Release History](https://github.com/${{ github.repository }}/releases)
+
+          ### About This Image
+
+          - **Built with:** LinuxServer.io-style patterns (s6, hardened defaults)
+          - **Maintained by:** Blackout Secure
+          - **Features:** MLAT result aggregation, Beast protocol input/output, network-only mode
+          - **Official Status:** Unofficial community container (not affiliated with LinuxServer.io or wiedehopf)
+          EOF
+          cat /tmp/release_notes.md
+
+      - name: Update Release Notes
+        uses: softprops/action-gh-release@v2
+        if: github.event.action == 'published'
+        with:
+          body_path: /tmp/release_notes.md
+          append_body: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  notify-upstream:
+    needs: [validate-release, release-metadata]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+    steps:
+      - name: Prepare upstream notification
+        id: upstream-notice
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          UPSTREAM_VERSION: ${{ needs.release-metadata.outputs.upstream_version }}
+          DOCKER_IMAGE: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+        run: |
+          TMPDIR="$(mktemp -d)"
+          trap 'rm -rf "${TMPDIR}"' EXIT
+
+          cat > "${TMPDIR}/upstream_notice.txt" << 'EOF'
+          ## Unofficial Community Image Release: ${{ env.RELEASE_VERSION }}
+
+          This is an automated notification about a new release of the unofficial Blackout Secure community container image for readsb.
+
+          **Release Details:**
+          - Container Version: ${{ env.RELEASE_VERSION }}
+          - Upstream readsb Version: ${{ env.UPSTREAM_VERSION }}
+          - Image: ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}
+          - Release URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}
+
+          **About This Image:**
+          - Built with LinuxServer.io-style patterns (s6, hardened defaults)
+          - Unofficial community container maintained by Blackout Secure
+          - Supports: x86-64 (amd64), ARM 64-bit (arm64v8)
+          - Includes: MLAT result aggregation, Beast protocol input/output, network-only mode
+          - Available on Docker Hub: ${{ env.DOCKER_IMAGE }}
+
+          This notification is provided for informational purposes. For upstream readsb issues or discussions, please see the main repository.
+
+          ---
+          *Generated by automated release workflow*
+          EOF
+          cat "${TMPDIR}/upstream_notice.txt"
+
+      - name: Create GitHub Issue on upstream (optional, commented out)
+        # This creates an issue on the upstream readsb project when a release is published.
+        # Uncomment to enable, but requires GitHub token with repo permissions.
+        if: false
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Note: This requires GITHUB_TOKEN with repo permissions on upstream
+            // For now, this is commented out and can be enabled with proper credentials
+
+            const upstreamRepo = {
+              owner: 'wiedehopf',
+              repo: 'readsb'
+            };
+
+            const releaseVersion = '${{ needs.release-metadata.outputs.version }}';
+            const upstreamVersion = '${{ needs.release-metadata.outputs.upstream_version }}';
+
+            const body = `
+            ## Unofficial Community Image Release
+
+            A new version (\`${releaseVersion}\`) of the Blackout Secure unofficial community container has been released.
+
+            - **Upstream Version:** ${upstreamVersion}
+            - **Repository:** ${{ github.repository }}
+            - **Release:** ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.event.release.tag_name }}
+            - **Supported Architectures:** x86-64, ARM 64-bit
+            - **Features:** MLAT result aggregation, Beast protocol input/output, network-only mode
+
+            This is an informational notice from the community. For details, see the container repository.
+            `;
+
+            // Uncomment when ready:
+            // github.rest.issues.create({
+            //   owner: upstreamRepo.owner,
+            //   repo: upstreamRepo.repo,
+            //   title: `[Community] Unofficial container release v${releaseVersion}`,
+            //   body: body,
+            //   labels: ['community', 'docker']
+            // });
+
+  summary:
+    needs: [validate-release, release-metadata, tag-images, create-github-release, create-release-notes]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Release Summary
+        env:
+          RELEASE_VERSION: ${{ needs.release-metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.validate-release.outputs.release_tag }}
+          EVENT_NAME: ${{ needs.validate-release.outputs.event_type }}
+          DOCKER_IMAGE: ${{ env.REGISTRY }}/${{ env.DOCKERHUB_NAMESPACE }}/${{ env.IMAGE_NAME }}
+          UPSTREAM_VERSION: ${{ needs.release-metadata.outputs.upstream_version }}
+        run: |
+          cat << EOF
+          ===== Release Workflow Complete =====
+
+          Release Event:     ${{ env.EVENT_NAME }}
+          Version:           ${{ env.RELEASE_VERSION }}
+          Release Tag:       ${{ env.RELEASE_TAG }}
+          Docker Hub Image:  ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}
+          Latest Tag:        ${{ env.DOCKER_IMAGE }}:latest
+          Upstream readsb:   ${{ env.UPSTREAM_VERSION }}
+          Repository:        ${{ github.repository }}
+          Triggered by:      ${{ github.triggering_actor }}
+          Timestamp:         $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+
+          Available Tags:
+          - ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }} (specific version)
+          - ${{ env.DOCKER_IMAGE }}:latest (current stable)
+          - Architectures: amd64, arm64v8
+
+          Next Steps:
+          1. Review release on GitHub: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.RELEASE_TAG }}
+          2. Test image pull: docker pull ${{ env.DOCKER_IMAGE }}:${{ env.RELEASE_VERSION }}
+          3. Monitor pull statistics and user issues
+
+          ===============================
+          EOF

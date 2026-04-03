@@ -1,0 +1,48 @@
+name: mlat-hub
+description: >-
+  LinuxServer.io containerized MLAT hub aggregating readsb network-only feeds
+  into one combined Beast output.
+
+post-provisioning: >-
+  ## Usage instructions
+
+  Include this snippet in your docker-compose.yml file under 'services':
+
+    ```
+    mlathub:
+      image: blackoutsecure/mlat-hub:latest
+      restart: unless-stopped
+      environment:
+        - TZ=Etc/UTC
+        - MLATHUB_INPUTS=mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in
+      ports:
+        - '30104:30104'
+        - '30105:30105'
+      security_opt:
+        - 'no-new-privileges:true'
+    ```
+
+  Repository: https://github.com/blackoutsecure/docker-mlat-hub
+
+version: 3.16.10
+type: sw.block
+assets:
+  repository:
+    type: blob.asset
+    data:
+      url: 'https://github.com/blackoutsecure/docker-mlat-hub'
+  logo:
+    type: blob.asset
+    data:
+      url: 'https://raw.githubusercontent.com/blackoutsecure/docker-mlat-hub/main/logo.png'
+data:
+  defaultDeviceType: raspberrypi3
+  supportedDeviceTypes:
+    - raspberrypi3
+    - raspberrypi3-64
+    - raspberrypi4
+    - raspberrypi4-64
+    - raspberrypi400
+    - raspberrypi400-64
+    - intel-nuc
+    - genericx86-64-ext
