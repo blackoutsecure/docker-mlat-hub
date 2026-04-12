@@ -24,7 +24,7 @@ post-provisioning: >-
 
   Repository: https://github.com/blackoutsecure/docker-mlat-hub
 
-version: 3.16.10
+version: 3.16.11
 type: sw.block
 assets:
   repository:
