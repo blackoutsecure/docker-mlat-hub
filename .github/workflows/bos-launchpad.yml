@@ -1,0 +1,106 @@
+# Caller for the hub's `bos-launchpad.yml` (Blackout Secure Launchpad) reusable.
+#
+#   monitor (github_branch_file mode) → release (docker → balena)
+#
+# Required vars:    DOCKERHUB_NAMESPACE, BALENA_NAMESPACE
+# Required secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, BALENA_API_TOKEN
+#
+# `balena.yml` is rendered by the hub on each run from the `balena_*` inputs
+# below. See blackoutsecure/bos-automation-hub for the full input reference.
+name: Blackout Secure Launchpad
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # stagger off :00 to dodge org cron pile-ups
+  workflow_dispatch:
+    # `github_release` isn't exposed — this repo opts out of automated
+    # GitHub Releases entirely (hub default `false`).
+    inputs:
+      stage_docker:
+        description: 'Stage: docker build & push'
+        type: boolean
+        default: true
+      stage_balena:
+        description: 'Stage: balena block publish'
+        type: boolean
+        default: true
+      force_run:
+        description: 'Force: run pipeline even if upstream unchanged'
+        type: boolean
+        default: false
+
+# No top-level `concurrency:` — the hub workflow owns serialization.
+# Declaring it on both sides triggers a GHA self-deadlock.
+permissions:
+  contents: read
+
+jobs:
+  release:
+    permissions:
+      contents:        write   # monitor tracking-file commit
+      actions:         write   # nested monitor (`gh workflow run`)
+      pull-requests:   write   # nested Docker Scout PR annotations
+      security-events: write   # nested Docker Scout SARIF upload
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad.yml@main
+    with:
+      # Schedule runs use the defaults; manual runs honour the dispatch
+      # checkboxes. Every launchpad stage defaults to `false` in the
+      # hub — opt in explicitly. `github_release` is left at its default
+      # (this repo doesn't publish GitHub Releases).
+      docker:           ${{ github.event_name != 'workflow_dispatch' || inputs.stage_docker }}
+      balena:           ${{ github.event_name != 'workflow_dispatch' || inputs.stage_balena }}
+
+      upstream_repo:    wiedehopf/readsb
+      source:           github_branch_file
+      upstream_branch:  dev
+      track_file:       .github/upstream/readsb-dev.json
+      force_run:        ${{ github.event_name == 'workflow_dispatch' && inputs.force_run }}
+      # When force_run is a manual dispatch, also bypass downstream caches
+      # so the rebuild ACTUALLY produces a fresh image + balena release.
+      # Without these, docker re-uses GHA layer cache (same digest) and balena
+      # returns the existing release for the same source SHA — the "force"
+      # ends up being a no-op deploy from the device's perspective.
+      docker_force:     ${{ github.event_name == 'workflow_dispatch' && inputs.force_run }}
+      balena_force:     ${{ github.event_name == 'workflow_dispatch' && inputs.force_run }}
+
+      image_name:          mlat-hub
+      dockerhub_namespace: ${{ vars.DOCKERHUB_NAMESPACE }}
+      balena_namespace:    ${{ vars.BALENA_NAMESPACE }}
+
+      # Render balena.yml dynamically — no checked-in copy.
+      balena_generate_yml: true
+
+      balena_description: >-
+        LinuxServer.io style containerized MLAT hub that aggregates multiple
+        mlat-client Beast feeds into a single deduplicated Beast output for
+        downstream tools (tar1090, dashboards, collectors). Runs readsb in
+        network-only mode with `--forward-mlat` enabled — no SDR hardware
+        required. Hardened LinuxServer.io-based environment.
+      balena_post_provisioning: |
+        ## Usage instructions
+
+        Include this snippet in your docker-compose.yml file under 'services':
+
+          ```
+          mlathub:
+            image: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/mlat-hub:latest
+            restart: unless-stopped
+            environment:
+              - TZ=Etc/UTC
+              - MLATHUB_INPUTS=mlat-adsbx,30105,beast_in;mlat-adsbfi,30105,beast_in
+              - LOG_LEVEL=info
+            ports:
+              - '30104:30104'
+              - '30105:30105'
+            security_opt:
+              - 'no-new-privileges:true'
+          ```
+
+        Combined MLAT results are available on port 30105 (Beast protocol).
+
+        Repository: https://github.com/${{ github.repository }}
+        Upstream application: https://github.com/wiedehopf/readsb
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN:    ${{ secrets.DOCKERHUB_TOKEN }}
+      BALENA_API_TOKEN:   ${{ secrets.BALENA_API_TOKEN }}
