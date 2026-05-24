@@ -1,6 +1,6 @@
 {
   "repo": "wiedehopf/readsb",
-  "source": "branch_head",
+  "source": "github_branch_file",
   "branch": "dev",
   "version": "3.16.15",
   "commit": "b499ecbd18dc4a2ec6098c31de31508017fa6190"
