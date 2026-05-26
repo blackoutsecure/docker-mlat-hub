@@ -7,7 +7,7 @@
 [![GitHub Stars](https://img.shields.io/github/stars/blackoutsecure/docker-mlat-hub?style=flat-square&color=E7931D&logo=github)](https://github.com/blackoutsecure/docker-mlat-hub/stargazers)
 [![Docker Pulls](https://img.shields.io/docker/pulls/blackoutsecure/mlat-hub?style=flat-square&color=E7931D&logo=docker&logoColor=FFFFFF)](https://hub.docker.com/r/blackoutsecure/mlat-hub)
 [![GitHub Release](https://img.shields.io/github/release/blackoutsecure/docker-mlat-hub.svg?style=flat-square&color=E7931D&logo=github&logoColor=FFFFFF)](https://github.com/blackoutsecure/docker-mlat-hub/releases)
-[![Blackout Secure Launchpad](https://img.shields.io/github/actions/workflow/status/blackoutsecure/docker-mlat-hub/bos-launchpad.yml?style=flat-square&label=blackout%20secure%20launchpad&color=E7931D)](https://github.com/blackoutsecure/docker-mlat-hub/actions/workflows/bos-launchpad.yml)
+[![Blackout Secure Launchpad](https://img.shields.io/github/actions/workflow/status/blackoutsecure/docker-mlat-hub/bos-launchpad-release.yml?style=flat-square&label=blackout%20secure%20launchpad&color=E7931D)](https://github.com/blackoutsecure/docker-mlat-hub/actions/workflows/bos-launchpad-release.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?style=flat-square)](https://www.gnu.org/licenses/gpl-3.0)
 
 Unofficial community image for [readsb](https://github.com/wiedehopf/readsb) configured as an MLAT hub, built with [LinuxServer.io](https://linuxserver.io/) style container patterns (s6, hardened defaults, practical runtime options). Aggregates multiple `mlat-client` Beast feeds into a single deduplicated Beast output for downstream tools (tar1090, dashboards, collectors). Sponsored and maintained by [Blackout Secure](https://blackoutsecure.app).
