@@ -1,4 +1,4 @@
-# Caller for the hub's `bos-launchpad.yml` (Blackout Secure Launchpad) reusable.
+# Caller for the hub's `bos-launchpad-release.yml` (Blackout Secure Launchpad) reusable.
 #
 #   monitor (github_branch_file mode) → release (docker → balena)
 #
@@ -41,7 +41,7 @@ jobs:
       actions:         write   # nested monitor (`gh workflow run`)
       pull-requests:   write   # nested Docker Scout PR annotations
       security-events: write   # nested Docker Scout SARIF upload
-    uses: blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad.yml@main
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad-release.yml@main
     with:
       # Schedule runs use the defaults; manual runs honour the dispatch
       # checkboxes. Every launchpad stage defaults to `false` in the
